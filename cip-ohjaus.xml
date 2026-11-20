@@ -1,0 +1,313 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<project xmlns="http://www.plcopen.org/xml/tc6_0200">
+  <fileHeader companyName="" productName="CODESYS" productVersion="CODESYS V3.5 SP22 Patch 1" creationDateTime="2026-11-20T13:19:52.7356136" />
+  <contentHeader name="cip-ohjaus.project" modificationDateTime="2026-11-20T13:18:20.2804895">
+    <coordinateInfo>
+      <fbd>
+        <scaling x="1" y="1" />
+      </fbd>
+      <ld>
+        <scaling x="1" y="1" />
+      </ld>
+      <sfc>
+        <scaling x="1" y="1" />
+      </sfc>
+    </coordinateInfo>
+    <addData>
+      <data name="http://www.3s-software.com/plcopenxml/projectinformation" handleUnknown="implementation">
+        <ProjectInformation />
+      </data>
+    </addData>
+  </contentHeader>
+  <types>
+    <dataTypes />
+    <pous />
+  </types>
+  <instances>
+    <configurations>
+      <configuration name="Device">
+        <resource name="Application">
+          <task name="MainTask" interval="PT0.02S" priority="1">
+            <pouInstance name="PLC_PRG" typeName="">
+              <documentation>
+                <xhtml xmlns="http://www.w3.org/1999/xhtml" />
+              </documentation>
+            </pouInstance>
+            <addData>
+              <data name="http://www.3s-software.com/plcopenxml/tasksettings" handleUnknown="implementation">
+                <TaskSettings KindOfTask="Cyclic" Interval="t#20ms" IntervalUnit="ms" WithinSPSTimeSlicing="true">
+                  <Watchdog Enabled="false" TimeUnit="ms" Sensitivity="1" />
+                </TaskSettings>
+              </data>
+              <data name="http://www.3s-software.com/plcopenxml/objectid" handleUnknown="discard">
+                <ObjectId>8666946c-ffa8-4c8f-8691-fbe792df9162</ObjectId>
+              </data>
+            </addData>
+          </task>
+          <addData>
+            <data name="http://www.3s-software.com/plcopenxml/pou" handleUnknown="implementation">
+              <pou name="PLC_PRG" pouType="program">
+                <interface>
+                  <localVars>
+                    <variable name="Cmd_Start">
+                      <type>
+                        <BOOL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="FALSE" />
+                      </initialValue>
+                      <documentation>
+                        <xhtml xmlns="http://www.w3.org/1999/xhtml"> Ohjausbitit (SCADA / OPC UA kirjoittaa)</xhtml>
+                      </documentation>
+                    </variable>
+                    <variable name="Cmd_EStop">
+                      <type>
+                        <BOOL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="FALSE" />
+                      </initialValue>
+                    </variable>
+                    <variable name="Step_ID">
+                      <type>
+                        <INT />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="0" />
+                      </initialValue>
+                      <documentation>
+                        <xhtml xmlns="http://www.w3.org/1999/xhtml"> Tilatiedot ja prosessimittaukset (SCADA / OPC UA lukee)</xhtml>
+                      </documentation>
+                    </variable>
+                    <variable name="Step_Name">
+                      <type>
+                        <string length="40" />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="'IDLE (Valmiustila)'" />
+                      </initialValue>
+                    </variable>
+                    <variable name="Temperature_C">
+                      <type>
+                        <REAL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="20" />
+                      </initialValue>
+                    </variable>
+                    <variable name="Conductivity_mScm">
+                      <type>
+                        <REAL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="0.5" />
+                      </initialValue>
+                    </variable>
+                    <variable name="Pump_Running">
+                      <type>
+                        <BOOL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="FALSE" />
+                      </initialValue>
+                    </variable>
+                    <variable name="Caustic_Valve_Open">
+                      <type>
+                        <BOOL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="FALSE" />
+                      </initialValue>
+                    </variable>
+                    <variable name="tonStepTimer">
+                      <type>
+                        <derived name="TON" />
+                      </type>
+                      <documentation>
+                        <xhtml xmlns="http://www.w3.org/1999/xhtml"> Sisäiset ajastimet ja syklilaskurit</xhtml>
+                      </documentation>
+                    </variable>
+                    <variable name="tonCycleTick">
+                      <type>
+                        <derived name="TON" />
+                      </type>
+                    </variable>
+                    <variable name="bTick500ms">
+                      <type>
+                        <BOOL />
+                      </type>
+                      <initialValue>
+                        <simpleValue value="FALSE" />
+                      </initialValue>
+                    </variable>
+                  </localVars>
+                </interface>
+                <body>
+                  <ST>
+                    <xhtml xmlns="http://www.w3.org/1999/xhtml">// 500 ms simulaatiopulssi prosessiarvojen (lämpö ja johtokyky) päivittämiseen
+tonCycleTick(IN := NOT tonCycleTick.Q, PT := T#500MS);
+bTick500ms := tonCycleTick.Q;
+
+// Turvalukitus (Hardwired / Safety E-Stop ohittaa kaiken)
+IF Cmd_EStop THEN
+    Step_ID := 99;
+    Step_Name := 'ALARM / E-STOP';
+    Pump_Running := FALSE;
+    Caustic_Valve_Open := FALSE;
+    Cmd_Start := FALSE;
+    tonStepTimer(IN := FALSE);
+    RETURN;
+END_IF
+
+// Palautuminen hälytyksestä kun E-Stop kuitataan pois
+IF (Step_ID = 99) AND NOT Cmd_EStop THEN
+    Step_ID := 0;
+    Step_Name := 'IDLE (Valmiustila)';
+END_IF
+
+// Päätilakone (ISA-88 / IEC 61131-3)
+CASE Step_ID OF
+
+    0: // IDLE (Valmiustila)
+        Pump_Running := FALSE;
+        Caustic_Valve_Open := FALSE;
+        tonStepTimer(IN := FALSE);
+
+        IF bTick500ms THEN
+            Temperature_C := MAX(20.0, Temperature_C - 1.5);
+            Conductivity_mScm := MAX(0.5, Conductivity_mScm - 1.0);
+        END_IF
+
+        IF Cmd_Start THEN
+            Cmd_Start := FALSE; // Nollataan käynnistyspulssi
+            Step_ID := 1;
+            Step_Name := 'PRE_RINSE (Esihuuhtelu)';
+        END_IF
+
+    1: // PRE_RINSE (Esihuuhtelu vedellä 3 sekuntia)
+        Pump_Running := TRUE;
+        Caustic_Valve_Open := FALSE;
+        tonStepTimer(IN := TRUE, PT := T#3S);
+
+        IF bTick500ms THEN
+            Temperature_C := MIN(40.0, Temperature_C + 4.0);
+            Conductivity_mScm := 1.2;
+        END_IF
+
+        IF tonStepTimer.Q THEN
+            tonStepTimer(IN := FALSE);
+            Step_ID := 2;
+            Step_Name := 'CAUSTIC_WASH (Lipeapesu 75C)';
+        END_IF
+
+    2: // CAUSTIC_WASH (Lipeäpesu: lämmitys 75C + kemikaali)
+        Pump_Running := TRUE;
+        Caustic_Valve_Open := TRUE;
+        tonStepTimer(IN := TRUE, PT := T#4S);
+
+        IF bTick500ms THEN
+            Temperature_C := MIN(75.0, Temperature_C + 7.0);
+            Conductivity_mScm := MIN(45.0, Conductivity_mScm + 9.0);
+        END_IF
+
+        IF tonStepTimer.Q AND (Temperature_C &gt;= 70.0) THEN
+            tonStepTimer(IN := FALSE);
+            Step_ID := 3;
+            Step_Name := 'FINAL_RINSE (Loppuhuuhtelu)';
+        END_IF
+
+    3: // FINAL_RINSE (Loppuhuuhtelu kunnes johtokyky &lt;= 2.0 mS/cm)
+        Pump_Running := TRUE;
+        Caustic_Valve_Open := FALSE;
+        tonStepTimer(IN := FALSE);
+
+        IF bTick500ms THEN
+            Temperature_C := MAX(25.0, Temperature_C - 8.0);
+            Conductivity_mScm := MAX(0.8, Conductivity_mScm - 9.0);
+        END_IF
+
+        IF Conductivity_mScm &lt;= 2.0 THEN
+            Step_ID := 0;
+            Step_Name := 'IDLE (Valmiustila)';
+        END_IF
+
+END_CASE</xhtml>
+                  </ST>
+                </body>
+                <addData>
+                  <data name="http://www.3s-software.com/plcopenxml/objectid" handleUnknown="discard">
+                    <ObjectId>34aeeb66-79f2-4b5a-9e4d-be5de6b00f05</ObjectId>
+                  </data>
+                </addData>
+              </pou>
+            </data>
+            <data name="http://www.3s-software.com/plcopenxml/libraries" handleUnknown="implementation">
+              <Libraries>
+                <Library Name="#IoStandard" Namespace="IoStandard" HideWhenReferencedAsDependency="false" PublishSymbolsInContainer="false" SystemLibrary="true" LinkAllContent="true" DefaultResolution="IoStandard, 3.5.22.0 (System)" />
+                <Library Name="#3SLicense" Namespace="_3S_LICENSE" HideWhenReferencedAsDependency="false" PublishSymbolsInContainer="false" SystemLibrary="true" LinkAllContent="false" DefaultResolution="3SLicense, 0.0.0.0 (CODESYS)" ResolverGuid="97c3b452-d9fa-4ac2-9d0c-3d420aa6d95b" />
+                <Library Name="#CAA Device Diagnosis" Namespace="DED" HideWhenReferencedAsDependency="false" PublishSymbolsInContainer="false" SystemLibrary="true" LinkAllContent="false" DefaultResolution="CAA Device Diagnosis, 3.5.22.0 (CAA Technical Workgroup)" />
+                <Library Name="#Standard" Namespace="Standard" HideWhenReferencedAsDependency="false" PublishSymbolsInContainer="false" SystemLibrary="false" LinkAllContent="false" DefaultResolution="Standard, * (System)" />
+                <Library Name="#BreakpointLogging" Namespace="BPLog" HideWhenReferencedAsDependency="false" PublishSymbolsInContainer="false" SystemLibrary="true" LinkAllContent="false" DefaultResolution="Breakpoint Logging Functions, * (3S - Smart Software Solutions GmbH)" />
+                <Library Name="#IecVarAccess" Namespace="IecVarAccessLibrary" HideWhenReferencedAsDependency="false" PublishSymbolsInContainer="false" SystemLibrary="true" LinkAllContent="false" DefaultResolution="IecVarAccess, 3.3.1.20 (System)" />
+                <PlaceholderRedirections>
+                  <PlaceholderRedirection Placeholder="Standard" Redirection="Standard, 3.5.22.0 (System)" />
+                  <PlaceholderRedirection Placeholder="StringUtils" Redirection="StringUtils, 3.5.22.0 (System)" />
+                  <PlaceholderRedirection Placeholder="Collections" Redirection="Collections, 3.5.17.0 (System)" />
+                  <PlaceholderRedirection Placeholder="Util" Redirection="Util, 3.5.22.0 (System)" />
+                </PlaceholderRedirections>
+                <addData>
+                  <data name="http://www.3s-software.com/plcopenxml/objectid" handleUnknown="discard">
+                    <ObjectId>ab733f62-c926-42b0-b495-b1eac604f26b</ObjectId>
+                  </data>
+                </addData>
+              </Libraries>
+            </data>
+            <data name="http://www.3s-software.com/plcopenxml/objectid" handleUnknown="discard">
+              <ObjectId>63110945-7919-4b43-99c1-7844c580379f</ObjectId>
+            </data>
+          </addData>
+        </resource>
+        <addData>
+          <data name="Device" handleUnknown="discard">
+            <Device xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns="">
+              <DeviceType>
+                <DeviceIdentification>
+                  <Type>4096</Type>
+                  <Id>0000 0004</Id>
+                  <Version>3.5.22.10</Version>
+                </DeviceIdentification>
+                <Connector moduleType="256" interface="Common.PCI" connectorId="0">
+                  <HostParameterSet />
+                </Connector>
+                <Connector moduleType="769" interface="SafetyInterface" connectorId="1">
+                  <HostParameterSet />
+                </Connector>
+                <DeviceParameterSet />
+                <DriverInfo />
+              </DeviceType>
+            </Device>
+          </data>
+          <data name="configurations" handleUnknown="discard">
+            <configurations />
+          </data>
+          <data name="http://www.3s-software.com/plcopenxml/objectid" handleUnknown="discard">
+            <ObjectId>ef8d2eb3-81b7-4ad2-bf84-5e8bec226475</ObjectId>
+          </data>
+        </addData>
+      </configuration>
+    </configurations>
+  </instances>
+  <addData>
+    <data name="http://www.3s-software.com/plcopenxml/projectstructure" handleUnknown="discard">
+      <ProjectStructure>
+        <Object Name="Device" ObjectId="ef8d2eb3-81b7-4ad2-bf84-5e8bec226475">
+          <Object Name="Application" ObjectId="63110945-7919-4b43-99c1-7844c580379f">
+            <Object Name="Library Manager" ObjectId="ab733f62-c926-42b0-b495-b1eac604f26b" />
+            <Object Name="PLC_PRG" ObjectId="34aeeb66-79f2-4b5a-9e4d-be5de6b00f05" />
+            <Object Name="MainTask" ObjectId="8666946c-ffa8-4c8f-8691-fbe792df9162" />
+          </Object>
+        </Object>
+      </ProjectStructure>
+    </data>
+  </addData>
+</project>
